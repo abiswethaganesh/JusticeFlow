@@ -1,6 +1,24 @@
+# Environment and secrets
 .env
+.env.*
+!.env.example
+
+# Python
+.venv/
 venv/
 __pycache__/
-*.pyc
+*.py[cod]
+
+# Frontend
 node_modules/
-dist/
+frontend/dist/
+
+# Generated evidence and uploads
+backend/uploads/
+uploads/
+
+# Local databases
+*.db
+
+# Editor settings (optional)
+.vscode/
