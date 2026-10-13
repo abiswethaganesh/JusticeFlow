@@ -2,6 +2,8 @@
 Handles persistence of complaint/case records, status event history logging,
 evidence attachments, and role/station filtered queries in PostgreSQL.
 """
+import os
+import logging
 from typing import Optional, List
 from sqlalchemy import or_, and_
 from sqlalchemy.orm import Session
@@ -9,9 +11,14 @@ from sqlalchemy.orm import Session
 from app.models.complaint import Complaint
 from app.models.case_event import CaseEvent
 from app.models.case_evidence import CaseEvidence
+from app.models.evidence_audit_event import EvidenceAuditEvent
+from app.models.case_obligation import CaseObligation
+from app.models.obligation_audit_event import ObligationAuditEvent
 from app.models.fir_record import FIRRecord
 from app.services.jurisdiction_service import resolve_police_station
 from app.services.gemini_service import generate_fir_draft
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_phone(phone: Optional[str]) -> str:
@@ -87,7 +94,98 @@ def create_complaint_record(
 
     db.commit()
     db.refresh(complaint)
+
+    # Automatically scan complaint narrative for time-sensitive evidence and statutory obligations
+    try:
+        scan_and_attach_time_sensitive_evidence(db, complaint)
+    except Exception as e:
+        print(f"[Evidence Scanner Note] Narrative scan error: {e}")
+
+    try:
+        from app.services.statutory_rule_service import evaluate_case_statutory_obligations
+        evaluate_case_statutory_obligations(db, complaint)
+    except Exception as e:
+        print(f"[Statutory Obligation Engine Note] Evaluation error: {e}")
+
     return complaint
+
+
+def scan_and_attach_time_sensitive_evidence(db: Session, complaint: Complaint) -> List[CaseEvidence]:
+    """Scans complaint narrative using AI/Rule engine and creates CaseEvidence and EvidenceAuditEvent records."""
+    from app.services.gemini_service import detect_time_sensitive_evidence
+    from app.services.retention_service import calculate_evidence_urgency
+    from app.models.evidence_audit_event import EvidenceAuditEvent
+
+    items = detect_time_sensitive_evidence(
+        complaint_text=complaint.original_complaint or complaint.complaint_text,
+        complaint_type=complaint.complaint_type,
+        entities=complaint.structured_data,
+    )
+
+    created_evidence = []
+    inc_date = (complaint.structured_data or {}).get("incident_date")
+    inc_time = (complaint.structured_data or {}).get("incident_time")
+
+    for item in items:
+        ev_type = item.get("type", "other")
+        title = item.get("title", "Evidence Item")
+
+        # Avoid duplicate narrative extractions for same case & title
+        existing = db.query(CaseEvidence).filter(
+            CaseEvidence.case_id == complaint.case_id,
+            CaseEvidence.title == title,
+        ).first()
+        if existing:
+            continue
+
+        urgency_info = calculate_evidence_urgency(
+            evidence_type=ev_type,
+            incident_date=inc_date,
+            incident_time=inc_time,
+            preservation_status="NOT_REVIEWED",
+            db=db,
+        )
+
+        preservation_status = "REVIEW_REQUIRED" if urgency_info.get("potentially_time_sensitive") else "NOT_REVIEWED"
+
+        ev = CaseEvidence(
+            case_id=complaint.case_id,
+            evidence_type=ev_type,
+            title=title,
+            file_path="",
+            file_url="",
+            description=item.get("description", ""),
+            source=item.get("source", "Extracted from narrative"),
+            potentially_time_sensitive=urgency_info.get("potentially_time_sensitive", True),
+            retention_period_days=urgency_info.get("retention_period_days"),
+            retention_source=urgency_info.get("retention_source"),
+            retention_confidence=urgency_info.get("retention_confidence", "UNKNOWN"),
+            urgency=urgency_info.get("urgency", "UNKNOWN"),
+            estimated_expiry=urgency_info.get("estimated_expiry"),
+            preservation_status=preservation_status,
+            is_digital_narrative_extracted=True,
+        )
+        db.add(ev)
+        db.flush()
+
+        audit = EvidenceAuditEvent(
+            case_id=complaint.case_id,
+            evidence_id=ev.id,
+            action="EVIDENCE_IDENTIFIED",
+            previous_status=None,
+            new_status=preservation_status,
+            actor_name="AI Intelligence Engine",
+            actor_role="SYSTEM",
+            remarks=urgency_info.get("reason", "Identified from complaint narrative."),
+        )
+        db.add(audit)
+        created_evidence.append(ev)
+
+    if created_evidence:
+        db.commit()
+
+    return created_evidence
+
 
 
 def list_complaints_for_user(
@@ -242,14 +340,84 @@ def get_or_create_fir_draft(db: Session, case_id: str) -> Optional[FIRRecord]:
 
 
 def delete_complaint_record(db: Session, case_id: str) -> bool:
+    """
+    Safely deletes a complaint record and all associated child entities in strict dependency order:
+    1. Find complaint/case.
+    2. Find all CaseEvidence records belonging to that case.
+    3. Remove physical files on disk associated with CaseEvidence (if present).
+    4. Delete all EvidenceAuditEvent records referencing evidence IDs or case ID.
+    5. Delete all CaseEvidence records.
+    6. Delete all CaseEvent records and FIRRecord records.
+    7. Delete the Complaint record.
+    8. Commit transaction (with automatic rollback on failure).
+    """
     complaint = get_complaint_by_case_id(db, case_id)
     if not complaint:
         return False
 
     real_case_id = complaint.case_id
-    db.query(CaseEvent).filter((CaseEvent.case_id == real_case_id) | (CaseEvent.case_id == str(case_id))).delete()
-    db.query(CaseEvidence).filter((CaseEvidence.case_id == real_case_id) | (CaseEvidence.case_id == str(case_id))).delete()
-    db.query(FIRRecord).filter((FIRRecord.case_id == real_case_id) | (FIRRecord.case_id == str(case_id))).delete()
-    db.delete(complaint)
-    db.commit()
-    return True
+
+    try:
+        # Step 2: Find all CaseEvidence records for this case
+        evidence_records = (
+            db.query(CaseEvidence)
+            .filter((CaseEvidence.case_id == real_case_id) | (CaseEvidence.case_id == str(case_id)))
+            .all()
+        )
+        evidence_ids = [ev.id for ev in evidence_records]
+
+        # Step 3: Remove physical evidence files on disk if present
+        for ev in evidence_records:
+            if ev.file_path and os.path.isfile(ev.file_path):
+                try:
+                    os.remove(ev.file_path)
+                except Exception as file_err:
+                    logger.warning(f"Failed to delete evidence file {ev.file_path}: {file_err}")
+
+        # Step 4: Delete EvidenceAuditEvent records referencing these evidence IDs or case_id
+        if evidence_ids:
+            db.query(EvidenceAuditEvent).filter(
+                (EvidenceAuditEvent.evidence_id.in_(evidence_ids)) |
+                (EvidenceAuditEvent.case_id == real_case_id) |
+                (EvidenceAuditEvent.case_id == str(case_id))
+            ).delete(synchronize_session=False)
+        else:
+            db.query(EvidenceAuditEvent).filter(
+                (EvidenceAuditEvent.case_id == real_case_id) |
+                (EvidenceAuditEvent.case_id == str(case_id))
+            ).delete(synchronize_session=False)
+
+        # Step 5: Delete CaseEvidence records
+        db.query(CaseEvidence).filter(
+            (CaseEvidence.case_id == real_case_id) | (CaseEvidence.case_id == str(case_id))
+        ).delete(synchronize_session=False)
+
+        # Step 6: Delete CaseEvent, FIRRecord, ObligationAuditEvent, and CaseObligation records
+        db.query(CaseEvent).filter(
+            (CaseEvent.case_id == real_case_id) | (CaseEvent.case_id == str(case_id))
+        ).delete(synchronize_session=False)
+
+        db.query(FIRRecord).filter(
+            (FIRRecord.case_id == real_case_id) | (FIRRecord.case_id == str(case_id))
+        ).delete(synchronize_session=False)
+
+        db.query(ObligationAuditEvent).filter(
+            (ObligationAuditEvent.case_id == real_case_id) | (ObligationAuditEvent.case_id == str(case_id))
+        ).delete(synchronize_session=False)
+
+        db.query(CaseObligation).filter(
+            (CaseObligation.case_id == real_case_id) | (CaseObligation.case_id == str(case_id))
+        ).delete(synchronize_session=False)
+
+        # Step 7: Delete Complaint record itself
+        db.delete(complaint)
+
+        # Step 8: Commit transaction
+        db.commit()
+        return True
+
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error deleting complaint record {case_id}: {e}", exc_info=True)
+        raise e
+

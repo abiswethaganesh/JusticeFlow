@@ -74,10 +74,62 @@ class CaseEvidenceResponse(BaseModel):
     case_id: str
     evidence_type: str
     title: str
-    file_path: str
-    file_url: str
+    file_path: str = ""
+    file_url: str = ""
     description: Optional[str] = None
+    source: Optional[str] = None
+    incident_timestamp: Optional[datetime] = None
+    identified_at: Optional[datetime] = None
+    potentially_time_sensitive: bool = False
+    retention_period_days: Optional[int] = None
+    retention_source: Optional[str] = None
+    retention_confidence: str = "UNKNOWN"
+    urgency: str = "UNKNOWN"
+    estimated_expiry: Optional[datetime] = None
+    preservation_status: str = "NOT_REVIEWED"
+    preservation_action_at: Optional[datetime] = None
+    preservation_notes: Optional[str] = None
+    is_digital_narrative_extracted: bool = False
     uploaded_at: datetime
+
+
+class PreservationActionRequest(BaseModel):
+    action: str
+    status: str
+    remarks: Optional[str] = ""
+    actor_name: Optional[str] = "Officer"
+    actor_role: Optional[str] = "OFFICER"
+
+
+class EvidenceAuditEventResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    case_id: str
+    evidence_id: int
+    action: str
+    previous_status: Optional[str] = None
+    new_status: str
+    actor_name: str
+    actor_role: str
+    time_to_preservation_minutes: Optional[float] = None
+    remarks: Optional[str] = None
+    created_at: datetime
+
+
+class EvidenceRetentionRuleResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    evidence_type: str
+    display_label: str
+    retention_period_days: Optional[int] = None
+    source_policy: str
+    confidence_level: str
+    is_time_sensitive: bool
+    default_urgency: str
+    preservation_guidelines: Optional[str] = None
+
 
 
 class ComplaintRecord(BaseModel):

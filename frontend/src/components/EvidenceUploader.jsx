@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { uploadEvidenceApi, deleteEvidenceApi, fetchCaseEvidenceApi, getErrorMessage } from '../services/api'
+import { uploadEvidenceApi, deleteEvidenceApi, fetchCaseEvidenceApi, getEvidenceFileUrl, getErrorMessage } from '../services/api'
+
 
 export default function EvidenceUploader({ caseId, recommendedEvidence = [], onEvidenceUploaded }) {
   const [uploading, setUploading] = useState(false)
@@ -45,6 +46,7 @@ export default function EvidenceUploader({ caseId, recommendedEvidence = [], onE
           file_path: file.name,
           file_url: URL.createObjectURL(file),
           uploaded_at: new Date().toISOString(),
+          _fileObj: file,
         }
       }
 
@@ -156,14 +158,23 @@ export default function EvidenceUploader({ caseId, recommendedEvidence = [], onE
                 </div>
                 <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
                   {item.file_url && (
-                    <a
-                      href={item.file_url}
-                      target="_blank"
-                      rel="noreferrer"
-                      style={{ color: 'var(--color-primary)', fontSize: '0.8rem', textDecoration: 'none', fontWeight: 600 }}
-                    >
-                      View File ↗
-                    </a>
+                    <>
+                      <a
+                        href={getEvidenceFileUrl(item)}
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: 'var(--color-primary)', fontSize: '0.8rem', textDecoration: 'none', fontWeight: 600 }}
+                      >
+                        View File ↗
+                      </a>
+                      <a
+                        href={getEvidenceFileUrl(item, true)}
+                        download
+                        style={{ color: '#475569', fontSize: '0.8rem', textDecoration: 'none', fontWeight: 600 }}
+                      >
+                        📥 Download
+                      </a>
+                    </>
                   )}
                   <button
                     onClick={() => handleDeleteEvidence(item.id)}

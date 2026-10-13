@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { analyzeIntakeApi, createComplaintApi, getErrorMessage } from '../services/api'
+import { analyzeIntakeApi, createComplaintApi, uploadEvidenceApi, getErrorMessage } from '../services/api'
 import { useAuth } from '../context/AuthContext'
 import { useComplaintWorkflow } from '../context/ComplaintWorkflowContext'
 import EvidenceUploader from '../components/EvidenceUploader'
@@ -145,6 +145,24 @@ export default function ConversationalIntake() {
         is_cognizable: analysis?.is_cognizable ?? true,
         priority: 'MEDIUM',
       })
+
+      // Upload any pending draft evidence files attached during intake
+      if (uploadedFiles && uploadedFiles.length > 0) {
+        for (const evItem of uploadedFiles) {
+          if (evItem._fileObj) {
+            try {
+              const formData = new FormData()
+              formData.append('file', evItem._fileObj)
+              formData.append('case_id', record.case_id)
+              formData.append('evidence_type', evItem.evidence_type || 'document')
+              formData.append('title', evItem.title || evItem.file_name)
+              await uploadEvidenceApi(formData)
+            } catch (evErr) {
+              console.error('Failed to upload evidence file on case submit:', evErr)
+            }
+          }
+        }
+      }
 
       updateWorkflow({ lastCaseId: record.case_id })
       setSubmittedRecord(record)

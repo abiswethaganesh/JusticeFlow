@@ -145,9 +145,14 @@ def delete_complaint(
     if user_role == "CITIZEN":
         pass  # Citizen authenticated to manage/delete complaint
 
-    success = complaint_record_service.delete_complaint_record(db, case_id)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to delete complaint record.")
+    try:
+        success = complaint_record_service.delete_complaint_record(db, case_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"No complaint found with case ID {case_id}.")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete complaint record: {str(exc)}")
 
     return {"message": "Complaint deleted successfully", "case_id": case_id}
 
@@ -195,6 +200,21 @@ def get_case_evidence(case_id: str, db: Session = Depends(get_db)):
     return complaint_record_service.get_case_evidence(db, case_id)
 
 
+@router.get("/{case_id}/time-sensitive-evidence", response_model=List[CaseEvidenceResponse])
+def get_time_sensitive_evidence(case_id: str, db: Session = Depends(get_db)):
+    evidence_list = complaint_record_service.get_case_evidence(db, case_id)
+    return [ev for ev in evidence_list if ev.potentially_time_sensitive]
+
+
+@router.post("/{case_id}/scan-evidence", response_model=List[CaseEvidenceResponse])
+def scan_complaint_evidence(case_id: str, db: Session = Depends(get_db)):
+    complaint = complaint_record_service.get_complaint_by_case_id(db, case_id)
+    if not complaint:
+        raise HTTPException(status_code=404, detail=f"No complaint found with case ID {case_id}.")
+
+    return complaint_record_service.scan_and_attach_time_sensitive_evidence(db, complaint)
+
+
 @router.get("/{case_id}/fir-draft")
 def get_fir_draft(case_id: str, db: Session = Depends(get_db)):
     fir = complaint_record_service.get_or_create_fir_draft(db, case_id)
@@ -224,3 +244,4 @@ def register_fir(
         return fir
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+

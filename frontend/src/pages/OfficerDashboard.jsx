@@ -1,16 +1,24 @@
 import { useEffect, useState } from 'react'
 import StatusBadge from '../components/StatusBadge'
 import FIRDraftViewer from '../components/FIRDraftViewer'
+import TimeSensitiveEvidencePanel from '../components/TimeSensitiveEvidencePanel'
+import StatutoryObligationPanel from '../components/StatutoryObligationPanel'
+import StatutoryObligationModal from '../components/StatutoryObligationModal'
 import {
   fetchComplaintsApi,
   updateComplaintStatusApi,
   fetchCaseEventsApi,
   fetchCaseEvidenceApi,
   fetchFIRDraftApi,
+  scanCaseEvidenceApi,
+  fetchDashboardObligationsApi,
+  getEvidenceFileUrl,
   getErrorMessage,
 } from '../services/api'
 import { useAuth } from '../context/AuthContext'
 import { FORM_SCHEMAS } from '../data/formSchemas'
+
+
 
 const TYPE_LABELS = {
   vehicle_theft: 'Vehicle Theft',
@@ -256,7 +264,18 @@ function OfficerCaseDetail({ caseItem, onBack, onStatusUpdated }) {
         </div>
       )}
 
+      {/* Time-Aware Evidence Preservation Panel */}
+      <TimeSensitiveEvidencePanel
+        caseId={caseItem.case_id}
+        evidenceList={evidenceList.filter((e) => e.potentially_time_sensitive)}
+        onEvidenceUpdated={async () => {
+          const refreshed = await fetchCaseEvidenceApi(caseItem.case_id)
+          setEvidenceList(refreshed)
+        }}
+      />
+
       {/* Attached Evidence Files */}
+
       {evidenceList.length > 0 && (
         <div style={{ marginBottom: '1.25rem' }}>
           <span className="eyebrow">Uploaded Case Evidence</span>
@@ -278,9 +297,14 @@ function OfficerCaseDetail({ caseItem, onBack, onStatusUpdated }) {
                 <div>
                   <strong>{ev.title}</strong> ({ev.evidence_type})
                 </div>
-                <a href={ev.file_url} target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)', fontWeight: 600 }}>
-                  View Evidence ↗
-                </a>
+                <div style={{ display: 'flex', gap: '0.6rem', alignItems: 'center' }}>
+                  <a href={getEvidenceFileUrl(ev)} target="_blank" rel="noreferrer" style={{ color: 'var(--color-primary)', fontWeight: 600, fontSize: '0.8rem', textDecoration: 'none' }}>
+                    View Evidence ↗
+                  </a>
+                  <a href={getEvidenceFileUrl(ev, true)} download style={{ color: '#475569', fontWeight: 600, fontSize: '0.8rem', textDecoration: 'none' }}>
+                    📥 Download
+                  </a>
+                </div>
               </div>
             ))}
           </div>
@@ -359,6 +383,10 @@ export default function OfficerDashboard() {
   const [error, setError] = useState(null)
   const [selectedCase, setSelectedCase] = useState(null)
 
+  const [obligations, setObligations] = useState([])
+  const [loadingObligations, setLoadingObligations] = useState(false)
+  const [selectedObligation, setSelectedObligation] = useState(null)
+
   const loadStationCases = async () => {
     setLoading(true)
     setError(null)
@@ -372,8 +400,21 @@ export default function OfficerDashboard() {
     }
   }
 
+  const loadDashboardObligations = async () => {
+    setLoadingObligations(true)
+    try {
+      const obs = await fetchDashboardObligationsApi()
+      setObligations(obs || [])
+    } catch (err) {
+      console.error('Failed to load dashboard statutory obligations:', err)
+    } finally {
+      setLoadingObligations(false)
+    }
+  }
+
   useEffect(() => {
     loadStationCases()
+    loadDashboardObligations()
   }, [])
 
   const pendingCount = complaints.filter((c) => c.status === 'SUBMITTED').length
@@ -422,13 +463,38 @@ export default function OfficerDashboard() {
             </div>
           </div>
 
+          {/* Statutory & Procedural Obligations Section */}
+          <div className="mb-6">
+            <StatutoryObligationPanel
+              obligations={obligations}
+              onSelectObligation={(ob) => setSelectedObligation(ob)}
+              isLoading={loadingObligations}
+            />
+          </div>
+
+          {/* Obligation Modal */}
+          {selectedObligation && (
+            <StatutoryObligationModal
+              obligation={selectedObligation}
+              onClose={() => setSelectedObligation(null)}
+              onRefresh={loadDashboardObligations}
+            />
+          )}
+
           <div className="card">
             <div
               className="card-pad"
               style={{ paddingBottom: '0.5rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
             >
               <h2 style={{ fontSize: '1.05rem' }}>Station Complaint Register (PostgreSQL)</h2>
-              <button className="btn btn-ghost" style={{ fontSize: '0.8rem' }} onClick={loadStationCases}>
+              <button
+                className="btn btn-ghost"
+                style={{ fontSize: '0.8rem' }}
+                onClick={() => {
+                  loadStationCases()
+                  loadDashboardObligations()
+                }}
+              >
                 ↻ Refresh Cases
               </button>
             </div>

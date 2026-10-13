@@ -155,10 +155,125 @@ export async function registerFIRApi(caseId, iifData) {
   return response.data
 }
 
+export async function fetchTimeSensitiveEvidenceApi(caseId) {
+  const response = await api.get(`/complaints/${caseId}/time-sensitive-evidence`)
+  return response.data
+}
+
+export async function fetchRetentionRulesApi() {
+  const response = await api.get('/evidence/retention-rules')
+  return response.data
+}
+
+export async function fetchPreservationDraftApi(evidenceId) {
+  const response = await api.post(`/evidence/${evidenceId}/preservation-draft`)
+  return response.data
+}
+
+export async function recordPreservationActionApi(evidenceId, action, status, remarks = '') {
+  const response = await api.post(`/evidence/${evidenceId}/preservation-action`, {
+    action,
+    status,
+    remarks,
+  })
+  return response.data
+}
+
+export async function fetchEvidenceAuditTrailApi(evidenceId) {
+  const response = await api.get(`/evidence/${evidenceId}/audit-trail`)
+  return response.data
+}
+
+export async function scanCaseEvidenceApi(caseId) {
+  const response = await api.post(`/complaints/${caseId}/scan-evidence`)
+  return response.data
+}
+
+export function getEvidenceFileUrl(evidence, download = false) {
+  if (!evidence) return '#'
+  
+  // Local blob URL preview during draft creation
+  if (typeof evidence === 'object' && evidence.file_url && evidence.file_url.startsWith('blob:')) {
+    return evidence.file_url
+  }
+
+  const evidenceId = typeof evidence === 'object' ? (evidence.id || evidence) : evidence
+  if (!evidenceId) return '#'
+
+  const saved = localStorage.getItem('justiceflow_user')
+  let token = ''
+  let phone = ''
+  let role = ''
+  let userId = ''
+  let station = ''
+
+  if (saved) {
+    try {
+      const u = JSON.parse(saved)
+      token = u.access_token || ''
+      phone = u.phone || ''
+      role = u.role || ''
+      userId = u.id || ''
+      station = u.station_branch || ''
+    } catch (e) {
+      // ignore
+    }
+  }
+
+  const params = new URLSearchParams()
+  if (download) params.append('download', '1')
+  if (token) params.append('token', token)
+  if (phone) params.append('user_phone', phone)
+  if (role) params.append('user_role', role)
+  if (userId) params.append('user_id', userId)
+  if (station) params.append('station_branch', station)
+
+  const queryStr = params.toString()
+  return `${baseURL}/evidence/${evidenceId}/file${queryStr ? '?' + queryStr : ''}`
+}
+
 export function getErrorMessage(err, fallback) {
   if (err?.response?.data?.detail) return err.response.data.detail
   if (err?.request) return 'Unable to connect to JusticeFlow API server. Please check your connection.'
   return fallback || 'Something went wrong. Please try again.'
 }
 
+// Statutory Obligation Endpoints
+export async function fetchDashboardObligationsApi() {
+  const response = await api.get('/obligations/dashboard')
+  return response.data
+}
+
+export async function fetchCaseObligationsApi(caseId) {
+  const response = await api.get(`/obligations/case/${caseId}`)
+  return response.data
+}
+
+export async function fetchObligationAuditTrailApi(obligationId) {
+  const response = await api.get(`/obligations/${obligationId}/audit-trail`)
+  return response.data
+}
+
+export async function completeObligationApi(obligationId, completionNotes) {
+  const response = await api.post(`/obligations/${obligationId}/complete`, { completion_notes: completionNotes })
+  return response.data
+}
+
+export async function markObligationNotApplicableApi(obligationId, reason) {
+  const response = await api.post(`/obligations/${obligationId}/not-applicable`, { reason })
+  return response.data
+}
+
+export async function requestObligationReviewApi(obligationId, reason) {
+  const response = await api.post(`/obligations/${obligationId}/request-review`, { reason })
+  return response.data
+}
+
+export async function evaluateCaseObligationsApi(caseId) {
+  const response = await api.post(`/obligations/cases/${caseId}/evaluate`)
+  return response.data
+}
+
 export default api
+
+

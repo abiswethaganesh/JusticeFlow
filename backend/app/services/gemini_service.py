@@ -48,21 +48,23 @@ Your job:
    - workplace_theft (stolen office assets, desk theft, workplace burglary)
    - vehicle_break_in (theft from parked vehicle, smashed car window, broken lock)
    - missing_person (ONLY when a human being or person is missing/kidnapped. NEVER for stolen items/objects)
-   - property_theft (house theft, burglary, stolen handbag, wallet, gold, laptop, cash)
-   - assault (physical attack, beating, violence, bodily injury)
-   - threat (extortion, blackmail, criminal intimidation)
-   - harassment (stalking, abuse, molestation, online harassment)
+   - property_theft (ONLY for house theft, burglary, stolen handbag, wallet, gold, laptop, cash)
+   - assault (ANY physical violence, physical attack, physical abuse, hitting, beating, punching, kicking, slapping, stabbing, brawling, physical assault)
+   - threat (extortion, blackmail, criminal intimidation, death threats)
+   - harassment (verbal abuse, shouting at someone, stalking, molestation, online/offline harassment without severe physical battery)
    - lost_document (lost ID card, passport, driving license without theft)
    - other (general complaint)
 
 Classification Guidelines:
-- If a mobile phone was snatched/grabbed on the road by someone fleeing, classify as phone_snatching.
-- If items were stolen from inside a vehicle by breaking glass/locks, classify as vehicle_break_in.
-- If items were stolen inside an office/desk/workplace, classify as workplace_theft.
-- If a vehicle collided with another or caused an accident, classify as vehicle_accident.
-- If property was intentionally damaged or vandalized, classify as property_damage.
-- If no vehicle (car/bike/scooter) was stolen as a whole, NEVER classify as vehicle_theft.
-- If no human being is missing, NEVER classify as missing_person.
+- If someone is hitting, beating, punching, kicking, slapping, physically attacking, or physically abusing another person, classify strictly as assault.
+- If someone is shouting at or verbally abusing another person without physical violence, classify as harassment.
+- NEVER classify physical assault, hitting, beating, physical attack, or verbal abuse as property_theft.
+- NEVER classify an incident as property_theft unless actual property, items, cash, or belongings were stolen.
+- Recognize roles accurately: Do NOT assume the complainant is automatically the victim.
+  - If the complainant says "I witnessed...", "I saw...", "I happened to see...", set complainant_role = "eyewitness".
+  - Extract victim_name or victim_details (e.g. "unknown woman on road").
+  - Extract accused_name_or_description or suspect_details (e.g. "unknown man shouting and hitting").
+  - Extract witnesses (e.g. "bystanders/people present at location").
 
 3. Determine if the offense is cognizable (True for theft, accident, fraud, snatching, break-in, missing person, assault, threat, harassment, property damage; False for lost document or trivial civil matters).
 4. Extract explicit entities mentioned by the citizen.
@@ -85,18 +87,22 @@ JSON Output Schema:
   "entities": {
      "complainant_name": string | null,
      "complainant_phone": string | null,
+     "complainant_role": "eyewitness" | "victim" | "third_party",
+     "victim_name": string | null,
+     "accused_name_or_description": string | null,
+     "witnesses": string | null,
      "incident_location": string | null,
      "incident_date": string | null,
      "incident_time": string | null,
-     ... category specific keys ...
+     "injury_details": string | null
   },
-  "missing_fields": ["field_name_1", "field_name_2"],
+  "missing_fields": ["field_name_1"],
   "ambiguous_fields": [],
   "follow_up_questions": ["Question 1?"],
-  "recommended_evidence": ["Evidence Item 1", "Evidence Item 2"],
+  "recommended_evidence": ["Evidence Item 1"],
   "ai_recommendations": {
-     "legal_sections": ["BNS 303(2) - Theft", "BNS 318 - Cheating"],
-     "recommended_action": "Verify incident location CCTV and register FIR."
+     "legal_sections": ["BNS Section 115 - Voluntarily Causing Hurt"],
+     "recommended_action": "Verify location CCTV and record witness statements."
   }
 }"""
 
@@ -402,13 +408,18 @@ def synthesize_statement_of_facts(complaint_type: str, entities: dict) -> str:
     facts = [f"On {dt} at approximately {tm}, {complainant} reported a {c_type_str} incident occurring at {loc}."]
 
     # Complaint-specific facts compilation
-    if complaint_type == "assault":
-        v = entities.get("victim_name") or complainant
-        acc = entities.get("accused_name_or_description")
+    if complaint_type in ["assault", "harassment"]:
+        c_role = entities.get("complainant_role") or "complainant"
+        v = entities.get("victim_name") or entities.get("victim") or ("the victim" if c_role == "eyewitness" else complainant)
+        acc = entities.get("accused_name_or_description") or entities.get("accused_details") or entities.get("suspect")
         inj = entities.get("injury_details")
+        wit = entities.get("witnesses")
+        if c_role == "eyewitness":
+            facts.append("Complainant is an eyewitness to the incident.")
         facts.append(f"Victim: {v}.")
         if acc: facts.append(f"Accused/Attacker Details: {acc}.")
         if inj: facts.append(f"Injuries & Medical Particulars: {inj}.")
+        if wit: facts.append(f"Witnesses Present: {wit}.")
 
     elif complaint_type == "vehicle_accident":
         v_reg = entities.get("vehicle_registration_number")
@@ -575,6 +586,8 @@ def _fallback_analyze_intake(
     # Enhanced 15-category classification engine
     if re.search(r'\b(snatch|snatched|grabbed my phone|snatchers|mobile snatching|phone robbery)\b', text_lower):
         complaint_type = "phone_snatching"
+    elif re.search(r'(assault|assaulted|assaulting|attacked|attacking|physical attack|beaten|beating|hitting|\bhit\b|punched|punching|kicked|kicking|slapped|slapping|stabbed|physically abus|physically attack|fight|fighting|brawl|abusing a woman|abusing a man|hitting her|hitting him)', text_lower):
+        complaint_type = "assault"
     elif re.search(r'\b(break in|break-in|smashed glass|broken window|broke.*window|car window|window glass|stolen from car|stolen from vehicle|tampered lock)\b', text_lower):
         complaint_type = "vehicle_break_in"
     elif re.search(r'\b(office|workplace|desk|cabin|company|stolen from office|workplace theft)\b', text_lower):
@@ -591,18 +604,31 @@ def _fallback_analyze_intake(
         complaint_type = "cyber_fraud"
     elif re.search(r'\b(missing person|disappeared|kidnap|lost child|lost person)\b', text_lower):
         complaint_type = "missing_person"
-    elif re.search(r'\b(assault|attacked|beaten|beating|punched|slapped|stabbed|physical attack|physical violence)\b', text_lower):
-        complaint_type = "assault"
     elif re.search(r'\b(threat|extort|blackmail|intimidat)\b', text_lower):
         complaint_type = "threat"
-    elif re.search(r'\b(harass|stalk|abuse|molest)\b', text_lower):
+    elif re.search(r'(harass|harassment|verbally abus|verbal abuse|stalk|molest|shouting)', text_lower):
         complaint_type = "harassment"
     elif re.search(r'\b(lost document|lost passport|lost aadhar|lost pan card|lost driving license)\b', text_lower):
         complaint_type = "lost_document"
-    elif re.search(r'\b(handbag|purse|wallet|bag|stolen|missing|theft|stolen items|belongings|jewellery|gold|laptop|phone|cash)\b', text_lower):
+    elif re.search(r'\b(break-in|broke into|broken into|house|flat|laptop.*stolen|stolen.*laptop|property theft|stolen items|belongings|jewellery|gold|stolen|theft|housebreak)\b', text_lower) and any(w in text_lower for w in ["stolen", "theft", "broke", "house", "flat", "laptop", "home", "burglar"]):
+        complaint_type = "property_theft"
+    elif re.search(r'\b(handbag|purse|wallet|bag|stolen|theft|stolen items|belongings|jewellery|gold|laptop|phone|cash)\b', text_lower) and "stolen" in text_lower:
         complaint_type = "property_theft"
     else:
-        complaint_type = "property_theft"
+        complaint_type = "other"
+
+    # Eyewitness / role detection in fallback
+    if any(w in text_lower for w in ["witnessed", "saw a", "i saw", "eyewitness", "bystander", "several people were present"]):
+        merged_entities["complainant_role"] = "eyewitness"
+        if "woman" in text_lower and not merged_entities.get("victim_name"):
+            merged_entities["victim_name"] = "An unidentified woman"
+        if "man" in text_lower and not merged_entities.get("accused_name_or_description"):
+            merged_entities["accused_name_or_description"] = "An unidentified man"
+        if "several people" in text_lower or "people present" in text_lower or "crowd" in text_lower:
+            merged_entities["witnesses"] = "Bystanders / public present at scene"
+    else:
+        if not merged_entities.get("complainant_role"):
+            merged_entities["complainant_role"] = "complainant"
 
     is_cognizable = complaint_type != "lost_document"
 
@@ -738,6 +764,10 @@ def analyze_conversational_intake(
 
     if re.search(r'\b(snatch|snatched|grabbed my phone|snatchers|mobile snatching|phone robbery)\b', text_check):
         parsed["complaint_type"] = "phone_snatching"
+    elif re.search(r'(assault|assaulted|assaulting|attacked|attacking|physical attack|beaten|beating|hitting|\bhit\b|punched|punching|kicked|kicking|slapped|slapping|stabbed|physically abus|physically attack|fight|fighting|brawl|abusing a woman|abusing a man|hitting her|hitting him)', text_check):
+        parsed["complaint_type"] = "assault"
+    elif re.search(r'(harass|harassment|verbally abus|verbal abuse|stalk|molest|shouting)', text_check) and not any(w in text_check for w in ["hit", "hitting", "beating", "punched", "punching", "kicked", "kicking", "slapped", "slapping", "stabbed", "physically"]):
+        parsed["complaint_type"] = "harassment"
     elif re.search(r'\b(break in|break-in|smashed glass|broken window|stolen from car|stolen from vehicle|tampered lock)\b', text_check):
         parsed["complaint_type"] = "vehicle_break_in"
     elif re.search(r'\b(office|workplace|desk|cabin|company|stolen from office|workplace theft)\b', text_check):
@@ -854,3 +884,201 @@ def generate_fir_draft(case_data: dict) -> dict:
         return json.loads(raw_text)
     except json.JSONDecodeError as exc:
         raise GeminiUnavailableError("Gemini returned invalid FIR draft JSON.") from exc
+
+
+EVIDENCE_DETECTION_SYSTEM_PROMPT = """You are an AI Evidence Extraction Specialist for JusticeFlow.
+Your task is to analyze the citizen's complaint text and identify any digital or physical evidence items mentioned or implied that may require preservation.
+
+Categories of Interest:
+- cctv_private: Private commercial, shop, home, or building CCTV/DVR camera footage.
+- cctv_public: Public, street, traffic, or municipal surveillance footage.
+- digital_transaction: UPI, netbanking, bank transfer, payment gateway, or scam payment records.
+- telecom_cdr: Call detail records, SMS logs, mobile tower dumps, or telecom records.
+- isp_log: Server access logs, IP address logs, website logs, ISP records.
+- atm_footage: ATM kiosk surveillance footage.
+- document: ID cards, paper invoices, written agreements, physical documents.
+- photo: Photos of crime scene, damage, injuries, or suspects.
+- other: Any other mentioned evidence item.
+
+Strict Rules:
+- Identify explicit mentions (e.g. "CCTV outside shop", "UPI payment of Rs 5000", "ATM nearby").
+- Determine if the evidence is potentially time-sensitive (CCTV, digital transactions, logs, telecom CDR are time-sensitive).
+- Return ONLY valid JSON matching the exact schema below.
+
+JSON Output Schema:
+{
+  "evidence_items": [
+    {
+      "type": "cctv_private" | "cctv_public" | "digital_transaction" | "telecom_cdr" | "isp_log" | "atm_footage" | "document" | "photo" | "other",
+      "title": "<Short Evidence Title>",
+      "description": "<Description of the evidence item>",
+      "source": "<Source or location of evidence e.g. Nearby Shop CCTV, GPay Transaction>",
+      "potentially_time_sensitive": boolean
+    }
+  ]
+}"""
+
+
+def _fallback_detect_time_sensitive_evidence(complaint_text: str, entities: Optional[dict] = None) -> list:
+    """Fallback rule-based evidence extractor when Gemini is offline or rate-limited."""
+    text_lower = (complaint_text + " " + json.dumps(entities or {})).lower()
+    items = []
+
+    if re.search(r'\b(cctv|camera|footage|dvr|video recording|surveillance|recorded on camera)\b', text_lower):
+        items.append({
+            "type": "cctv_private",
+            "title": "CCTV Camera Footage",
+            "description": "CCTV camera footage recorded near the incident location.",
+            "source": "Incident location / Nearby CCTV",
+            "potentially_time_sensitive": True,
+        })
+
+    if re.search(r'\b(upi|gpay|phonepe|paytm|bank|transaction|transfer|scammed|paid|ref no|account)\b', text_lower):
+        items.append({
+            "type": "digital_transaction",
+            "title": "Digital Payment Transaction Log",
+            "description": "Electronic bank or UPI payment transaction record.",
+            "source": "Payment gateway / Complainant bank account",
+            "potentially_time_sensitive": True,
+        })
+
+    if re.search(r'\b(call|cdr|phone record|tower dump|sms log|whatsapp message)\b', text_lower):
+        items.append({
+            "type": "telecom_cdr",
+            "title": "Telecom Call Detail Records (CDR)",
+            "description": "Call detail records and mobile network location logs.",
+            "source": "Telecom Service Provider / Nodal Officer",
+            "potentially_time_sensitive": True,
+        })
+
+    if re.search(r'\b(atm|cash machine)\b', text_lower):
+        items.append({
+            "type": "atm_footage",
+            "title": "ATM Kiosk CCTV Footage",
+            "description": "Surveillance footage from ATM kiosk.",
+            "source": "Bank ATM Security Division",
+            "potentially_time_sensitive": True,
+        })
+
+    return items
+
+
+def detect_time_sensitive_evidence(complaint_text: str, complaint_type: str, entities: Optional[dict] = None) -> list:
+    """Scans complaint narrative using Gemini AI to identify potentially time-sensitive evidence items."""
+    client = _get_client()
+    prompt = f"Complaint Type: {complaint_type}\nComplaint Narrative:\n\"\"\"{complaint_text}\"\"\"\nExtracted Entities: {json.dumps(entities or {})}\n\nIdentify time-sensitive evidence candidates JSON."
+
+    import time
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=settings.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=EVIDENCE_DETECTION_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                ),
+            )
+            break
+        except Exception as exc:
+            if attempt < 2 and ("503" in str(exc) or "UNAVAILABLE" in str(exc) or "demand" in str(exc).lower()):
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            logger.warning(f"Gemini evidence detection failed, using rule fallback: {exc}")
+            return _fallback_detect_time_sensitive_evidence(complaint_text, entities)
+
+    if not response or not (response.text or "").strip():
+        return _fallback_detect_time_sensitive_evidence(complaint_text, entities)
+
+    try:
+        parsed = json.loads(response.text.strip())
+        items = parsed.get("evidence_items", [])
+        if isinstance(items, list) and len(items) > 0:
+            return items
+        return _fallback_detect_time_sensitive_evidence(complaint_text, entities)
+    except Exception:
+        return _fallback_detect_time_sensitive_evidence(complaint_text, entities)
+
+
+PRESERVATION_DRAFT_SYSTEM_PROMPT = """You are an AI Legal Assistant generating an Officer Preservation Request Notice Draft for JusticeFlow.
+
+IMPORTANT SAFETY INSTRUCTION:
+This document is strictly an OFFICER REVIEW DRAFT. The AI system does NOT automatically send legal notices, freeze accounts, contact third parties, or exercise police powers.
+
+Your job:
+Generate a formal requisition notice draft addressed to the evidence holding authority (e.g. Shop owner, Bank Nodal Officer, Telecom Provider).
+
+Return ONLY valid JSON matching the exact schema below.
+
+JSON Output Schema:
+{
+  "subject": "OFFICIAL REQUISITION: Preservation of Evidence for Case <case_id>",
+  "case_id": "<case_id>",
+  "target_recipient": "<Authority/In-Charge Name/Designation>",
+  "evidence_title": "<Evidence Title>",
+  "location": "<Location>",
+  "incident_date_time": "<Incident Date/Time>",
+  "requisition_narrative": "<Formal requisition notice text under applicable law requesting immediate preservation of digital/CCTV records to prevent auto-overwriting or deletion>",
+  "disclaimer": "OFFICER REVIEW DRAFT ONLY — Requires investigating officer review and signature before issuance."
+}"""
+
+
+def generate_preservation_request_draft(case_id: str, evidence_data: dict, complaint_data: dict) -> dict:
+    """Generates an officer-reviewable preservation request notice draft."""
+    client = _get_client()
+    prompt = f"Case ID: {case_id}\nEvidence Details: {json.dumps(evidence_data)}\nCase Information: {json.dumps(complaint_data)}\n\nGenerate preservation request draft JSON."
+
+    import time
+    response = None
+    for attempt in range(3):
+        try:
+            response = client.models.generate_content(
+                model=settings.gemini_model,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    system_instruction=PRESERVATION_DRAFT_SYSTEM_PROMPT,
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                ),
+            )
+            break
+        except Exception as exc:
+            if attempt < 2 and ("503" in str(exc) or "UNAVAILABLE" in str(exc) or "demand" in str(exc).lower()):
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            logger.warning(f"Gemini preservation draft failed, using rule fallback: {exc}")
+            break
+
+    if response and (response.text or "").strip():
+        try:
+            return json.loads(response.text.strip())
+        except Exception:
+            pass
+
+    # Fallback template draft
+    title = evidence_data.get("title", "Evidence Record")
+    source = evidence_data.get("source", "Holding Entity / Nodal Officer")
+    loc = complaint_data.get("incident_details", {}).get("location") or complaint_data.get("structured_data", {}).get("incident_location", "Incident Location")
+    dt = complaint_data.get("structured_data", {}).get("incident_date", "Date of Incident")
+
+    return {
+        "subject": f"OFFICIAL REQUISITION: Urgent Preservation of {title} for Case {case_id}",
+        "case_id": case_id,
+        "target_recipient": f"The Manager / In-Charge, {source}",
+        "evidence_title": title,
+        "location": loc,
+        "incident_date_time": dt,
+        "requisition_narrative": (
+            f"REQUISITION FOR PRESERVATION OF EVIDENCE\n\n"
+            f"Case Reference: {case_id}\n"
+            f"Location: {loc}\n"
+            f"Incident Date/Time: {dt}\n\n"
+            f"You are hereby requested to preserve and safeguard all {title} pertaining to the above location and date/time. "
+            f"Please ensure that auto-overwrite cycles, deletion protocols, or data purging routines are immediately paused for this evidence block. "
+            f"This request is issued in connection with an ongoing official complaint investigation."
+        ),
+        "disclaimer": "OFFICER REVIEW DRAFT ONLY — Requires investigating officer review and signature before issuance.",
+    }
+
